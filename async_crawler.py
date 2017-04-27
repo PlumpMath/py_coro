@@ -9,6 +9,10 @@ except ImportError:
 
 loop = asyncio.get_event_loop()
 
+# this one is pretty much just minor modifications to coroutine_crawler:
+# 1. change the asyncio.coroutine decorator to `async def` declaration
+# 2. replace `yield from` with await
+
 
 class Fetcher:
     def __init__(self, loop):
@@ -17,48 +21,46 @@ class Fetcher:
         self.q = Queue()
         self.seen_urls = set(['/'])
 
-    @asyncio.coroutine
-    def manager(self):
+    async def manager(self):
         workers = [self.loop.create_task(self.worker())
                    for _ in range(self.num_worker)]
-        yield from self.q.put('/')
+        # the `yield from` is not needed
+        await self.q.put('/')
         # wait until q is empty
-        yield from self.q.join()
+        await self.q.join()
         for w in workers:
             w.cancel()
 
-    @asyncio.coroutine
-    def worker(self):
+    async def worker(self):
         while True:
-            url = yield from self.q.get()
+            url = await self.q.get()
 
             sock = socket.socket(socket.AF_INET)
             sock.setblocking(False)
             try:
-                yield from self.loop.sock_connect(sock, ('dilbert.com', 80))
+                await self.loop.sock_connect(sock, ('dilbert.com', 80))
             except BlockingIOError:
                 pass
 
             request = 'GET {} HTTP/1.1\r\nHost: dilbert.com\r\nConnection: close\r\n\r\n'.format(
                 url)
-            yield from self.loop.sock_sendall(sock, request.encode('ascii'))
+            await self.loop.sock_sendall(sock, request.encode('ascii'))
 
             response = b''
-            chunk = yield from self.loop.sock_recv(sock, 4096)
+            chunk = await self.loop.sock_recv(sock, 4096)
             while chunk:
                 response += chunk
-                chunk = yield from self.loop.sock_recv(sock, 4096)
+                chunk = await self.loop.sock_recv(sock, 4096)
 
-            links = yield from self.parse_link(response)
+            links = await self.parse_link(response)
             for link in links.difference(self.seen_urls):
-                yield from self.q.put(link)
+                await self.q.put(link)
 
             self.seen_urls.update(links)
             self.q.task_done()
             sock.close()
 
-    @asyncio.coroutine
-    def parse_link(self, response):
+    async def parse_link(self, response):
         links = set([])
         d = pq(response)
         anchors = d("a")
