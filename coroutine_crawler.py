@@ -1,100 +1,81 @@
-import asyncio
-import aiohttp
+from selectors import KqueueSelector, EVENT_WRITE, EVENT_READ
 from pyquery import PyQuery as pq
-
-# `yield from` semantics
-# 1. wait for a Future to be ready
-# 2. `delegate` from the caller coroutine to another coroutine
-
+import asyncio
+import socket
 
 try:
 	from asyncio import JoinableQueue as Queue
 except ImportError:
 	from asyncio import Queue
 
+loop = asyncio.get_event_loop()
 
-class Crawler:
-	def __init__(self, root_url, max_redirect, loop):
-		self.max_tasks = 10
-		self.max_redirect = max_redirect
-		self.q = Queue()
-		self.seen_urls = set()
+
+class Fetcher:
+	def __init__(self, loop):
+		self.num_worker = 10
 		self.loop = loop
-
-		self.session = aiohttp.ClientSession(loop=self.loop)
-
-		self.q.put_nowait((root_url, self.max_redirect))
+		self.q = Queue()
+		self.seen_urls = set(['/'])
 
 	@asyncio.coroutine
-	def crawl(self):
-		"""Run the crawler until all work is done."""
-		workers = [self.loop.create_task(self.work()) 
-				   for _ in range(self.max_tasks)]
-
-		# When all work is done, exit
+	def manager(self):
+		workers = [self.loop.create_task(self.worker()) for _ in range(self.num_worker)]
+		# the `yield from` is not be needed because it only blocks when q is full
+		yield from self.q.put('/')
+		# wait until q is empty
 		yield from self.q.join()
 		for w in workers:
 			w.cancel()
-		self.session.close()
+
 
 	@asyncio.coroutine
-	def work(self):
+	def worker(self):
 		while True:
-			url, max_redirect = yield from self.q.get()
-			print("working on " + url + " with " + str(max_redirect) + " max_redirect")
+			url = yield from self.q.get()
+			# print("get " + url)
 
-			# Download page and add new links to self.q.
-			yield from self.fetch(url, max_redirect)
+			sock = socket.socket(socket.AF_INET)
+			sock.setblocking(False)
+			try:
+				# self.sock.connect(('dilbert.com', 80))
+				yield from self.loop.sock_connect(sock, ('dilbert.com', 80))
+			except BlockingIOError:
+				pass
+
+			request = 'GET {} HTTP/1.1\r\nHost: dilbert.com\r\nConnection: close\r\n\r\n'.format(url)
+			yield from self.loop.sock_sendall(sock, request.encode('ascii'))
+
+			response = b''
+			chunk = yield from self.loop.sock_recv(sock, 4096)
+			while chunk:
+				response += chunk
+				chunk = yield from self.loop.sock_recv(sock, 4096)
+
+			links = yield from self.parse_link(response)
+			for link in links.difference(self.seen_urls):
+				# print(link)
+				yield from self.q.put(link)
+
+			self.seen_urls.update(links)
 			self.q.task_done()
+			sock.close()
+
 
 	@asyncio.coroutine
-	def fetch(self, url, max_redirect):
-		response = yield from self.session.get(
-			url, allow_redirects=False)
-
-		try:
-			if self.is_redirect(response):
-				if max_redirect > 0:
-					next_url = response.headers['location']
-					if next_url in self.seen_urls:
-						# We have been down this path before.
-						return
-
-					# Remember we have seen this URL.
-					self.seen_urls.add(next_url)
-
-					# Follow the redirect. One less redirect remains.
-					self.q.put_nowait((next_url, max_redirect - 1))
-			else:
-				links = yield from self.parse_links(response)
-				for link in links.difference(self.seen_urls):
-					print("adding " + link + ", now the number of urls in the queue is " + str(self.q.qsize()))
-					self.q.put_nowait((link, self.max_redirect))
-				self.seen_urls.update(links)
-		finally:
-			pass
-
-
-	def is_redirect(self, response):
-		return response.status in (300, 301, 302, 303, 307)
-
-	
-	@asyncio.coroutine
-	def parse_links(self, response):
-		# response is a coroutine
+	def parse_link(self, response):
 		links = set([])
-		html = yield from response.read()
-		d = pq(html)
+		d = pq(response)
 		anchors = d("a")
 		for anchor in anchors:
 			href = anchor.get("href")
 			if href and href[:5] == "http:" and href[7:14] == "dilbert":
-				links.add(href)
+				links.add(href[6:])
 		return links
 
-loop = asyncio.get_event_loop()
-crawler = Crawler('http://dilbert.com',
-						   max_redirect=10, loop=loop)
-loop.run_until_complete(crawler.crawl())
+
+fetcher = Fetcher(loop)
+loop.run_until_complete(fetcher.manager())
 loop.close()
-print("Crawling complete!")
+
+print("processes " + str(len(fetcher.seen_urls)) + " urls")
