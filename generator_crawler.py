@@ -153,7 +153,7 @@ class Fetcher:
 		anchors = d("a")
 		for anchor in anchors:
 			href = anchor.get("href")
-			if href[:5] == "http:" and href[7:14] == "dilbert":
+			if href and href[:5] == "http:" and href[7:14] == "dilbert":
 				links.add(href[6:])
 		return links
 

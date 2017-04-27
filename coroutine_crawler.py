@@ -4,7 +4,7 @@ from pyquery import PyQuery as pq
 
 # `yield from` semantics
 # 1. wait for a Future to be ready
-# 2. `invoke` another coroutine
+# 2. `delegate` from the caller coroutine to another coroutine
 
 
 try:
